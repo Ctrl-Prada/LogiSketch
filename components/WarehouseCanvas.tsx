@@ -1,7 +1,11 @@
 
 import React, { useRef, useEffect, useState, useImperativeHandle, forwardRef } from 'react';
-import { ProjectData, LightingOrientation, LightingMode } from '../types';
-import { PALLET_COLOR, PALLET_STROKE, MEZZANINE_COLOR, MEZZANINE_STROKE, LIGHTING_COLOR, WALL_COLOR, DIMENSION_COLOR, FIXTURE_COLOR, FIXTURE_GLOW } from '../constants';
+import { ProjectData, SportsProjectData, LightingOrientation, LightingMode } from '../types';
+import { 
+  PALLET_COLOR, PALLET_STROKE, MEZZANINE_COLOR, MEZZANINE_STROKE, 
+  LIGHTING_COLOR, WALL_COLOR, DIMENSION_COLOR, FIXTURE_COLOR, FIXTURE_GLOW,
+  GRASS_COLOR, FIELD_LINE_COLOR, POST_COLOR, POST_STROKE, COVERING_COLOR
+} from '../constants';
 import { ZoomIn, ZoomOut, Maximize, Move } from 'lucide-react';
 
 export type CanvasHandle = {
@@ -9,11 +13,12 @@ export type CanvasHandle = {
 };
 
 interface WarehouseCanvasProps {
-  data: ProjectData;
+  data: ProjectData | SportsProjectData;
   width?: number;
   height?: number;
   isInteractive?: boolean; 
   viewMode?: '2D' | '3D';
+  mode?: 'INDUSTRIAL' | 'SPORTS';
   onRackMove?: (id: string, x: number, y: number) => void;
 }
 
@@ -23,6 +28,7 @@ export const WarehouseCanvas = forwardRef<CanvasHandle, WarehouseCanvasProps>(({
   height = 400,
   isInteractive = false,
   viewMode = '2D',
+  mode = 'INDUSTRIAL',
   onRackMove
 }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -35,6 +41,16 @@ export const WarehouseCanvas = forwardRef<CanvasHandle, WarehouseCanvasProps>(({
   const [transform, setTransform] = useState({ scale: 1, x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
   const [lastMousePos, setLastMousePos] = useState({ x: 0, y: 0 });
+
+  // Type Guards
+  const isIndustrial = (d: any): d is ProjectData => mode === 'INDUSTRIAL';
+  const isSports = (d: any): d is SportsProjectData => mode === 'SPORTS';
+
+  const getObjects = () => {
+    if (isIndustrial(data)) return data.storage.racks;
+    if (isSports(data)) return data.objects;
+    return [];
+  }
 
   // --- HELPER: ISOMETRIC PROJECTION ---
   const projectIso = (x: number, y: number, z: number) => {
@@ -50,12 +66,21 @@ export const WarehouseCanvas = forwardRef<CanvasHandle, WarehouseCanvasProps>(({
   const drawScene3D = (ctx: CanvasRenderingContext2D, width: number, height: number, transparentBg: boolean = false) => {
       const w = data.width || 10;
       const l = data.length || 20;
-      const h = data.ceilingHeight || 5;
+      const h = isIndustrial(data) ? data.ceilingHeight : 0; // Sports doesn't have ceiling height visual usually
 
       // Calculate Scale to Fit
+      // For sports, we might have tall posts, so we consider object heights
+      let maxObjH = 0;
+      const objects = getObjects();
+      objects.forEach(o => {
+          const oh = (o.elevation || 0) + (o.height || 0);
+          if (oh > maxObjH) maxObjH = oh;
+      });
+      const renderH = Math.max(h, maxObjH, 5); // Minimum 5m for bounding box
+
       const points = [
           projectIso(0, 0, 0), projectIso(w, 0, 0), projectIso(w, l, 0), projectIso(0, l, 0), // Base
-          projectIso(0, 0, h), projectIso(w, 0, h), projectIso(w, l, h), projectIso(0, l, h)  // Top
+          projectIso(0, 0, renderH), projectIso(w, 0, renderH), projectIso(w, l, renderH), projectIso(0, l, renderH)  // Top
       ];
       let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
       points.forEach(p => {
@@ -100,58 +125,60 @@ export const WarehouseCanvas = forwardRef<CanvasHandle, WarehouseCanvasProps>(({
 
       ctx.beginPath();
       ctx.moveTo(v000.x, v000.y); ctx.lineTo(vW00.x, vW00.y); ctx.lineTo(vWL0.x, vWL0.y); ctx.lineTo(v0L0.x, v0L0.y); ctx.closePath();
-      ctx.fillStyle = 'rgba(31, 41, 55, 0.5)';
+      ctx.fillStyle = mode === 'SPORTS' ? GRASS_COLOR : 'rgba(31, 41, 55, 0.5)';
       ctx.fill();
-      ctx.strokeStyle = '#4b5563';
-      ctx.lineWidth = 1;
+      ctx.strokeStyle = mode === 'SPORTS' ? FIELD_LINE_COLOR : '#4b5563';
+      ctx.lineWidth = mode === 'SPORTS' ? 2 : 1;
       ctx.stroke();
 
-      // 2. Racks (Sorted by depth for painter's algorithm)
-      // Sort by (x + y) approximately works for isometric Z-sorting, also consider elevation
-      const sortedRacks = [...data.storage.racks].sort((a, b) => (a.x + a.y + (a.elevation || 0)) - (b.x + b.y + (b.elevation || 0)));
+      // 2. Objects (Sorted by depth)
+      // For Sports, we render cylinders (posts) or planes (coverings)
+      const sortedObjects = [...objects].sort((a, b) => (a.x + a.y + (a.elevation || 0)) - (b.x + b.y + (b.elevation || 0)));
 
-      sortedRacks.forEach(rack => {
-          const rx = rack.x;
-          const ry = rack.y;
-          const rw = rack.width;
-          const rd = rack.depth;
-          const rh = rack.height;
-          const el = rack.elevation || 0; // Elevation from ground
+      sortedObjects.forEach(obj => {
+          const rx = obj.x;
+          const ry = obj.y;
+          const rw = obj.width;
+          const rd = obj.depth;
+          const rh = obj.height;
+          const el = obj.elevation || 0;
           
-          const isMezzanine = rack.type === 'MEZZANINE';
+          const isMezzanine = obj.type === 'MEZZANINE' || obj.type === 'COVERING';
+          const isPost = obj.type === 'POST';
 
-          // Vertices Bottom (at Elevation)
+          // Vertices
           const b1 = toScreen(rx, ry, el);
           const b2 = toScreen(rx+rw, ry, el);
           const b3 = toScreen(rx+rw, ry+rd, el);
           const b4 = toScreen(rx, ry+rd, el);
           
-          // Vertices Top (Elevation + Height)
           const t1 = toScreen(rx, ry, el + rh);
           const t2 = toScreen(rx+rw, ry, el + rh);
           const t3 = toScreen(rx+rw, ry+rd, el + rh);
           const t4 = toScreen(rx, ry+rd, el + rh);
 
           // Colors
-          const colorBase = isMezzanine ? '#42C0B5' : '#F03200';
-          const colorDark = isMezzanine ? '#2d8780' : '#b92b00';
-          const colorDarker = isMezzanine ? '#1e5e59' : '#8a2000';
-          const colorFace = isMezzanine ? 'rgba(66, 192, 181, 0.8)' : 'rgba(240, 50, 0, 0.8)';
+          let colorBase, colorDark, colorDarker, colorFace;
+          
+          if (mode === 'SPORTS') {
+             if (isPost) {
+                 colorBase = POST_COLOR; colorDark = '#9ca3af'; colorDarker = '#6b7280'; colorFace = POST_COLOR;
+             } else { // Covering
+                 colorBase = COVERING_COLOR; colorDark = '#cbd5e1'; colorDarker = '#94a3b8'; colorFace = 'rgba(255,255,255,0.9)';
+             }
+          } else {
+             // Industrial
+             colorBase = isMezzanine ? '#42C0B5' : '#F03200';
+             colorDark = isMezzanine ? '#2d8780' : '#b92b00';
+             colorDarker = isMezzanine ? '#1e5e59' : '#8a2000';
+             colorFace = isMezzanine ? 'rgba(66, 192, 181, 0.8)' : 'rgba(240, 50, 0, 0.8)';
+          }
 
-          ctx.strokeStyle = '#FFFFFF';
+          ctx.strokeStyle = mode === 'SPORTS' ? '#6b7280' : '#FFFFFF';
           ctx.lineWidth = 0.5;
 
-          // Faces (Right: 2-3-7-6, Left: 3-4-8-7, Top: 5-6-7-8) - Simplified, drawing visible faces
-          
-          // Bottom Face (Visible if floating mezzanine)
+          // Shadows
           if (el > 0) {
-              ctx.beginPath();
-              ctx.moveTo(b1.x, b1.y); ctx.lineTo(b2.x, b2.y); ctx.lineTo(b3.x, b3.y); ctx.lineTo(b4.x, b4.y); ctx.closePath();
-              ctx.fillStyle = colorDarker;
-              ctx.fill();
-              ctx.stroke();
-              
-              // Shadow on floor
               const s1 = toScreen(rx, ry, 0);
               const s2 = toScreen(rx+rw, ry, 0);
               const s3 = toScreen(rx+rw, ry+rd, 0);
@@ -162,66 +189,64 @@ export const WarehouseCanvas = forwardRef<CanvasHandle, WarehouseCanvasProps>(({
               ctx.fill();
           }
 
+          // Geometry
+          // Bottom Face (visible if floating)
+          if (el > 0) {
+              ctx.beginPath(); ctx.moveTo(b1.x, b1.y); ctx.lineTo(b2.x, b2.y); ctx.lineTo(b3.x, b3.y); ctx.lineTo(b4.x, b4.y); ctx.closePath();
+              ctx.fillStyle = colorDarker; ctx.fill(); ctx.stroke();
+          }
+
           // Top Face
-          ctx.beginPath();
-          ctx.moveTo(t1.x, t1.y); ctx.lineTo(t2.x, t2.y); ctx.lineTo(t3.x, t3.y); ctx.lineTo(t4.x, t4.y); ctx.closePath();
-          ctx.fillStyle = isMezzanine ? colorBase : colorFace; // Top
-          ctx.fill();
-          ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(t1.x, t1.y); ctx.lineTo(t2.x, t2.y); ctx.lineTo(t3.x, t3.y); ctx.lineTo(t4.x, t4.y); ctx.closePath();
+          ctx.fillStyle = colorFace; ctx.fill(); ctx.stroke();
 
-          // Right Face (Visible if looking from corner)
-          ctx.beginPath();
-          ctx.moveTo(b2.x, b2.y); ctx.lineTo(b3.x, b3.y); ctx.lineTo(t3.x, t3.y); ctx.lineTo(t2.x, t2.y); ctx.closePath();
-          ctx.fillStyle = colorDark; 
-          ctx.fill();
-          ctx.stroke();
+          // Sides
+          ctx.beginPath(); ctx.moveTo(b2.x, b2.y); ctx.lineTo(b3.x, b3.y); ctx.lineTo(t3.x, t3.y); ctx.lineTo(t2.x, t2.y); ctx.closePath();
+          ctx.fillStyle = colorDark; ctx.fill(); ctx.stroke();
 
-          // Front/Left Face
-          ctx.beginPath();
-          ctx.moveTo(b3.x, b3.y); ctx.lineTo(b4.x, b4.y); ctx.lineTo(t4.x, t4.y); ctx.lineTo(t3.x, t3.y); ctx.closePath();
-          ctx.fillStyle = colorDarker; 
-          ctx.fill();
-          ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(b3.x, b3.y); ctx.lineTo(b4.x, b4.y); ctx.lineTo(t4.x, t4.y); ctx.lineTo(t3.x, t3.y); ctx.closePath();
+          ctx.fillStyle = colorDarker; ctx.fill(); ctx.stroke();
       });
 
-      // 3. Ceiling/Walls Wireframe (On top to show volume)
-      const v00H = toScreen(0,0,h);
-      const vW0H = toScreen(w,0,h);
-      const vWLH = toScreen(w,l,h);
-      const v0LH = toScreen(0,l,h);
+      // 3. Walls/Ceiling Wireframe (Industrial Only)
+      if (mode === 'INDUSTRIAL') {
+          const v00H = toScreen(0,0,h);
+          const vW0H = toScreen(w,0,h);
+          const vWLH = toScreen(w,l,h);
+          const v0LH = toScreen(0,l,h);
 
-      ctx.beginPath();
-      ctx.moveTo(v00H.x, v00H.y); ctx.lineTo(vW0H.x, vW0H.y); ctx.lineTo(vWLH.x, vWLH.y); ctx.lineTo(v0LH.x, v0LH.y); ctx.closePath();
-      ctx.strokeStyle = '#F03200';
-      ctx.lineWidth = 2;
-      ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(v00H.x, v00H.y); ctx.lineTo(vW0H.x, vW0H.y); ctx.lineTo(vWLH.x, vWLH.y); ctx.lineTo(v0LH.x, v0LH.y); ctx.closePath();
+          ctx.strokeStyle = '#F03200';
+          ctx.lineWidth = 2;
+          ctx.stroke();
 
-      // Vertical pillars
-      ctx.strokeStyle = '#6b7280';
-      ctx.lineWidth = 1;
-      ctx.setLineDash([5, 5]);
-      ctx.beginPath();
-      ctx.moveTo(v000.x, v000.y); ctx.lineTo(v00H.x, v00H.y);
-      ctx.moveTo(vW00.x, vW00.y); ctx.lineTo(vW0H.x, vW0H.y);
-      ctx.moveTo(vWL0.x, vWL0.y); ctx.lineTo(vWLH.x, vWLH.y);
-      ctx.moveTo(v0L0.x, v0L0.y); ctx.lineTo(v0LH.x, v0LH.y);
-      ctx.stroke();
-      ctx.setLineDash([]);
-
-      // Labels
-      const drawLabel = (text: string, x: number, y: number, color: string) => {
-        ctx.save();
-        ctx.fillStyle = 'rgba(0,0,0,0.7)';
-        ctx.beginPath(); ctx.arc(x, y, 12, 0, Math.PI*2); ctx.fill(); ctx.restore();
-        ctx.fillStyle = color;
-        ctx.font = 'bold 14px Poppins';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(text, x, y);
+          // Vertical pillars
+          ctx.strokeStyle = '#6b7280';
+          ctx.lineWidth = 1;
+          ctx.setLineDash([5, 5]);
+          ctx.beginPath();
+          ctx.moveTo(v000.x, v000.y); ctx.lineTo(v00H.x, v00H.y);
+          ctx.moveTo(vW00.x, vW00.y); ctx.lineTo(vW0H.x, vW0H.y);
+          ctx.moveTo(vWL0.x, vWL0.y); ctx.lineTo(vWLH.x, vWLH.y);
+          ctx.moveTo(v0L0.x, v0L0.y); ctx.lineTo(v0LH.x, v0LH.y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          
+          // Height Label
+          const drawLabel = (text: string, x: number, y: number, color: string) => {
+            ctx.save(); ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.beginPath(); ctx.arc(x, y, 12, 0, Math.PI*2); ctx.fill(); ctx.restore();
+            ctx.fillStyle = color; ctx.font = 'bold 14px Poppins'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(text, x, y);
+          }
+          drawLabel(`${h}m`, (v000.x + v00H.x)/2 - 10, (v000.y + v00H.y)/2, '#FFFFFF');
       }
-      drawLabel(`${h}m`, (v000.x + v00H.x)/2 - 10, (v000.y + v00H.y)/2, '#F6C847');
-      drawLabel(`${w}m`, (v000.x + vW00.x)/2, v000.y + 25, '#ffffff');
-      drawLabel(`${l}m`, (vW00.x + vWL0.x)/2 + 25, (vW00.y + vWL0.y)/2, '#ffffff');
+
+      // Base Dimensions
+      const drawBaseLabel = (text: string, x: number, y: number) => {
+         ctx.fillStyle = '#FFFFFF'; ctx.font = 'bold 14px Poppins'; ctx.textAlign = 'center'; ctx.fillText(text, x, y);
+      }
+      drawBaseLabel(`${w}m`, (v000.x + vW00.x)/2, v000.y + 25);
+      drawBaseLabel(`${l}m`, (vW00.x + vWL0.x)/2 + 25, (vW00.y + vWL0.y)/2);
   };
 
   // --- DRAW SCENE 2D ---
@@ -251,91 +276,115 @@ export const WarehouseCanvas = forwardRef<CanvasHandle, WarehouseCanvasProps>(({
         ctx.fillStyle = '#9ca3af';
         ctx.font = '500 14px Poppins, sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText('Defina as dimensões do galpão', width / 2, height / 2);
+        ctx.fillText('Defina as dimensões', width / 2, height / 2);
         return { originX, originY, scale: finalScale, drawWidth, drawLength };
      }
 
-     // Floor Shadow
-     ctx.shadowColor = 'rgba(0,0,0,0.1)';
-     ctx.shadowBlur = 10;
-     ctx.fillStyle = '#ffffff';
-     ctx.fillRect(originX, originY, drawWidth, drawLength);
-     ctx.shadowBlur = 0;
+     // Floor
+     if (mode === 'SPORTS') {
+         // Improved Aesthetics for Sports Field
+         ctx.shadowColor = 'rgba(0,0,0,0.2)'; ctx.shadowBlur = 15;
+         ctx.fillStyle = GRASS_COLOR;
+         ctx.fillRect(originX, originY, drawWidth, drawLength);
+         ctx.shadowBlur = 0;
+         
+         // Field Lines
+         ctx.strokeStyle = FIELD_LINE_COLOR;
+         ctx.lineWidth = 2;
+         ctx.strokeRect(originX, originY, drawWidth, drawLength);
+         
+         // Center Line (Simple representation)
+         ctx.beginPath();
+         ctx.moveTo(originX + drawWidth/2, originY);
+         ctx.lineTo(originX + drawWidth/2, originY + drawLength);
+         ctx.stroke();
+         // Center Circle
+         ctx.beginPath();
+         ctx.arc(originX + drawWidth/2, originY + drawLength/2, toPx(2), 0, Math.PI*2);
+         ctx.stroke();
 
-     // Grid
-     ctx.strokeStyle = '#e5e7eb';
-     ctx.lineWidth = 1;
-     ctx.beginPath();
-     const gridStep = finalScale < 5 ? 10 : 5; 
-     for(let i = gridStep; i < data.width; i+=gridStep) {
-         ctx.moveTo(getX(i), getY(0)); ctx.lineTo(getX(i), getY(data.length));
-     }
-     for(let i = gridStep; i < data.length; i+=gridStep) {
-         ctx.moveTo(getX(0), getY(i)); ctx.lineTo(getX(data.width), getY(i));
-     }
-     ctx.stroke();
+     } else {
+         // Industrial Floor
+         ctx.shadowColor = 'rgba(0,0,0,0.1)'; ctx.shadowBlur = 10; ctx.fillStyle = '#ffffff';
+         ctx.fillRect(originX, originY, drawWidth, drawLength); ctx.shadowBlur = 0;
+         
+         // Grid
+         ctx.strokeStyle = '#e5e7eb'; ctx.lineWidth = 1; ctx.beginPath();
+         const gridStep = finalScale < 5 ? 10 : 5; 
+         for(let i = gridStep; i < data.width; i+=gridStep) { ctx.moveTo(getX(i), getY(0)); ctx.lineTo(getX(i), getY(data.length)); }
+         for(let i = gridStep; i < data.length; i+=gridStep) { ctx.moveTo(getX(0), getY(i)); ctx.lineTo(getX(data.width), getY(i)); }
+         ctx.stroke();
 
-     // Walls
-     ctx.strokeStyle = WALL_COLOR;
-     ctx.lineWidth = 4;
-     ctx.strokeRect(originX, originY, drawWidth, drawLength);
+         // Walls
+         ctx.strokeStyle = WALL_COLOR; ctx.lineWidth = 4; ctx.strokeRect(originX, originY, drawWidth, drawLength);
+     }
 
      // Global Dimensions
      const GLOBAL_DIM_OFFSET = 30;
-     ctx.strokeStyle = DIMENSION_COLOR;
-     ctx.fillStyle = DIMENSION_COLOR;
-     ctx.lineWidth = 2;
+     ctx.strokeStyle = DIMENSION_COLOR; ctx.fillStyle = DIMENSION_COLOR; ctx.lineWidth = 2;
      
-     // Width
-     ctx.beginPath(); ctx.moveTo(originX, originY - GLOBAL_DIM_OFFSET); ctx.lineTo(originX + drawWidth, originY - GLOBAL_DIM_OFFSET); ctx.stroke();
-     ctx.beginPath(); ctx.moveTo(originX, originY - GLOBAL_DIM_OFFSET - 5); ctx.lineTo(originX, originY - GLOBAL_DIM_OFFSET + 5); ctx.stroke();
-     ctx.beginPath(); ctx.moveTo(originX + drawWidth, originY - GLOBAL_DIM_OFFSET - 5); ctx.lineTo(originX + drawWidth, originY - GLOBAL_DIM_OFFSET + 5); ctx.stroke();
-     ctx.font = 'bold 14px Poppins'; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
-     ctx.fillText(`${data.width}m`, originX + drawWidth/2, originY - GLOBAL_DIM_OFFSET - 5);
+     if (mode === 'SPORTS') {
+        // Inner Dimensions for Sports - Moved inside to not conflict with post dimensions
+        ctx.font = 'bold 24px Poppins'; 
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillStyle = 'rgba(0,0,0,0.3)'; // Subtle
+        // Width text inside center top
+        ctx.fillText(`${data.width}m`, originX + drawWidth/2, originY + 40);
+        // Length text inside left center (rotated)
+        ctx.save(); ctx.translate(originX + 40, originY + drawLength/2); ctx.rotate(-Math.PI/2); 
+        ctx.fillText(`${data.length}m`, 0, 0); ctx.restore();
 
-     // Length
-     ctx.beginPath(); ctx.moveTo(originX - GLOBAL_DIM_OFFSET, originY); ctx.lineTo(originX - GLOBAL_DIM_OFFSET, originY + drawLength); ctx.stroke();
-     ctx.beginPath(); ctx.moveTo(originX - GLOBAL_DIM_OFFSET - 5, originY); ctx.lineTo(originX - GLOBAL_DIM_OFFSET + 5, originY); ctx.stroke();
-     ctx.beginPath(); ctx.moveTo(originX - GLOBAL_DIM_OFFSET - 5, originY + drawLength); ctx.lineTo(originX - GLOBAL_DIM_OFFSET + 5, originY + drawLength); ctx.stroke();
-     ctx.save(); ctx.translate(originX - GLOBAL_DIM_OFFSET - 10, originY + drawLength/2); ctx.rotate(-Math.PI/2); ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
-     ctx.fillText(`${data.length}m`, 0, 0); ctx.restore();
+     } else {
+        // Outer Dimensions for Industrial
+        ctx.beginPath(); ctx.moveTo(originX, originY - GLOBAL_DIM_OFFSET); ctx.lineTo(originX + drawWidth, originY - GLOBAL_DIM_OFFSET); ctx.stroke();
+        ctx.font = 'bold 14px Poppins'; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+        ctx.fillText(`${data.width}m`, originX + drawWidth/2, originY - GLOBAL_DIM_OFFSET - 5);
+   
+        ctx.beginPath(); ctx.moveTo(originX - GLOBAL_DIM_OFFSET, originY); ctx.lineTo(originX - GLOBAL_DIM_OFFSET, originY + drawLength); ctx.stroke();
+        ctx.save(); ctx.translate(originX - GLOBAL_DIM_OFFSET - 10, originY + drawLength/2); ctx.rotate(-Math.PI/2); 
+        ctx.fillText(`${data.length}m`, 0, 0); ctx.restore();
+     }
 
-     // Lighting
-     const drawFixture = (xMeters: number, yMeters: number) => {
-         const cx = getX(xMeters);
-         const cy = getY(yMeters);
-         const radius = Math.max(3, Math.min(8, 3 * (finalScale / 1)));
-         ctx.shadowBlur = 8; ctx.shadowColor = FIXTURE_GLOW; ctx.fillStyle = FIXTURE_COLOR;
-         ctx.beginPath(); ctx.arc(cx, cy, radius, 0, Math.PI * 2); ctx.fill(); ctx.shadowBlur = 0; 
-     };
-
-     if (data.lighting.isActive) {
-         ctx.strokeStyle = LIGHTING_COLOR;
-         // Optimized line width: proportional to physical width (~15cm) but min 2px for visibility
-         ctx.lineWidth = Math.max(2, finalScale * 0.15);
-         ctx.setLineDash([5, 5]);
-         ctx.beginPath();
+     // Lighting (Industrial Only)
+     if (isIndustrial(data) && data.lighting.isActive) {
+         const drawFixture = (xMeters: number, yMeters: number) => {
+             const cx = getX(xMeters); const cy = getY(yMeters);
+             const radius = Math.max(3, Math.min(8, 3 * (finalScale / 1)));
+             ctx.shadowBlur = 8; ctx.shadowColor = FIXTURE_GLOW; ctx.fillStyle = FIXTURE_COLOR;
+             ctx.beginPath(); ctx.arc(cx, cy, radius, 0, Math.PI * 2); ctx.fill(); ctx.shadowBlur = 0; 
+         };
+         ctx.strokeStyle = LIGHTING_COLOR; ctx.lineWidth = Math.max(2, finalScale * 0.15); ctx.setLineDash([5, 5]); ctx.beginPath();
          const { orientation, mode, value, offset, fixturesPerProfile } = data.lighting;
          const isLongitudinal = orientation === LightingOrientation.Longitudinal;
          const axisLimit = isLongitudinal ? data.width : data.length; 
          let profilePositions: number[] = [];
+         
          if (mode === LightingMode.Quantity) {
             if (value >= 1) {
                 if (value === 1) { profilePositions = [axisLimit / 2]; } else {
-                    const availableSpace = axisLimit - (offset * 2);
-                    const step = availableSpace / (value - 1);
+                    const availableSpace = axisLimit - (offset * 2); const step = availableSpace / (value - 1);
                     for(let i=0; i<value; i++) { profilePositions.push(offset + (i * step)); }
                 }
             }
          } else {
-             // CRITICAL FIX: Ensure value is positive to prevent infinite loop/crash
+             // Mode: Distance
+             // Refined: Calculate profiles fitting within safe area (axisLimit - 2*offset) and center them.
              if (value > 0.01) {
-                let currentPos = offset;
-                let iterations = 0;
-                while (currentPos < axisLimit && iterations < 5000) { 
-                    profilePositions.push(currentPos); 
-                    currentPos += value; 
-                    iterations++;
+                const available = axisLimit - (offset * 2);
+                if (available >= 0) {
+                    // Count how many gaps of size 'value' fit
+                    const intervals = Math.floor(available / value);
+                    const count = intervals + 1;
+                    
+                    if (count > 0) {
+                        const span = intervals * value;
+                        // Center the span within the available space relative to the offset
+                        const start = offset + ((available - span) / 2);
+                        
+                        for(let i=0; i<count; i++) {
+                            profilePositions.push(start + (i * value));
+                        }
+                    }
                 }
              }
          }
@@ -345,13 +394,9 @@ export const WarehouseCanvas = forwardRef<CanvasHandle, WarehouseCanvasProps>(({
              else { ctx.moveTo(getX(0), getY(pos)); ctx.lineTo(getX(data.width), getY(pos)); }
          });
          ctx.stroke(); ctx.setLineDash([]);
-         
-         // Fixtures PER PROFILE (New Logic)
          const profileLength = isLongitudinal ? data.length : data.width; 
          if (fixturesPerProfile > 0 && profilePositions.length > 0) {
-             const margin = 1; 
-             const usableLen = profileLength - (margin * 2);
-             
+             const margin = 1; const usableLen = profileLength - (margin * 2);
              profilePositions.forEach(pos => {
                  const step = fixturesPerProfile > 1 ? usableLen / (fixturesPerProfile - 1) : 0;
                  for (let i = 0; i < fixturesPerProfile; i++) {
@@ -362,289 +407,467 @@ export const WarehouseCanvas = forwardRef<CanvasHandle, WarehouseCanvasProps>(({
          }
      } 
 
-     // Racks
-     if (data.storage.isActive && data.storage.racks.length > 0) {
-         // Sort so Mezzanines are on top if desired, or simple render
-         const sortedRacks = [...data.storage.racks].sort((a,b) => (a.elevation || 0) - (b.elevation || 0));
+     // Objects (Racks or Sports Objects)
+     const objects = getObjects();
+     
+     const drawDimensionLine = (x1: number, y1: number, x2: number, y2: number, text: string, color = DIMENSION_COLOR) => {
+        ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+        // Text
+        ctx.font = '600 12px Poppins, sans-serif';
+        const tm = ctx.measureText(text); const cx = (x1+x2)/2; const cy = (y1+y2)/2;
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.9)'; ctx.fillRect(cx - tm.width/2 - 4, cy - 8, tm.width + 8, 16);
+        ctx.fillStyle = color; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(text, cx, cy);
+     };
 
-         sortedRacks.forEach((rack) => {
-             const isDragged = dragTarget?.id === rack.id;
-             const isHovered = hoveredBlockId === rack.id;
-             const isMezzanine = rack.type === 'MEZZANINE';
+     if (objects.length > 0) {
+         // Sort by elevation for drawing order (Objects on top of others)
+         const sortedForDrawing = [...objects].sort((a,b) => (a.elevation || 0) - (b.elevation || 0));
 
-             const fillColor = isMezzanine ? MEZZANINE_COLOR : PALLET_COLOR;
-             const strokeColor = isMezzanine ? MEZZANINE_STROKE : PALLET_STROKE;
- 
-             ctx.fillStyle = isDragged ? fillColor.replace('0.25', '0.4') : (isHovered ? fillColor.replace('0.25', '0.3') : fillColor);
-             ctx.strokeStyle = isDragged ? '#D02B00' : strokeColor;
-             ctx.lineWidth = isDragged ? 2 : 1.5;
+         sortedForDrawing.forEach((obj) => {
+             const isDragged = dragTarget?.id === obj.id;
+             const isHovered = hoveredBlockId === obj.id;
              
-             const pxX = getX(rack.x);
-             const pxY = getY(rack.y);
-             const pxW = toPx(rack.width);
-             const pxH = toPx(rack.depth);
+             const isMezzanine = obj.type === 'MEZZANINE';
+             const isCovering = obj.type === 'COVERING';
+             const isPost = obj.type === 'POST';
+
+             const pxX = getX(obj.x);
+             const pxY = getY(obj.y);
+             const pxW = toPx(obj.width);
+             const pxH = toPx(obj.depth);
  
-             ctx.fillRect(pxX, pxY, pxW, pxH);
-             ctx.strokeRect(pxX, pxY, pxW, pxH);
- 
-             const fontSize = Math.max(10, Math.min(16, 11 * (finalScale / 1)));
-             ctx.fillStyle = strokeColor;
-             ctx.font = `bold ${fontSize}px Poppins, sans-serif`;
-             ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-             ctx.fillText(rack.label, pxX + pxW/2, pxY + pxH/2);
-             
-             if (isMezzanine) {
-                  ctx.font = `${fontSize * 0.8}px Poppins, sans-serif`;
-                  ctx.fillText(`E:${rack.elevation}m`, pxX + pxW/2, pxY + pxH/2 + fontSize);
-             } else if (rack.height) {
-                  ctx.font = `${fontSize * 0.8}px Poppins, sans-serif`;
-                  ctx.fillText(`H:${rack.height}m`, pxX + pxW/2, pxY + pxH/2 + fontSize);
+             let strokeColor = PALLET_STROKE; // Default color logic for labels
+
+             if (isPost) {
+                 // Draw Circle for Post
+                 const radius = pxW / 2;
+                 const cx = pxX + radius;
+                 const cy = pxY + radius;
+                 
+                 ctx.fillStyle = isDragged ? '#ffffff' : POST_COLOR;
+                 ctx.strokeStyle = POST_STROKE;
+                 strokeColor = POST_STROKE;
+                 ctx.lineWidth = 2;
+                 ctx.beginPath();
+                 ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+                 ctx.fill();
+                 ctx.stroke();
+             } else {
+                 // Rectangles (Racks, Mezzanine, Covering)
+                 let fillColor = PALLET_COLOR;
+                 
+                 if (mode === 'INDUSTRIAL') {
+                    if (isMezzanine) { fillColor = MEZZANINE_COLOR; strokeColor = MEZZANINE_STROKE; }
+                 } else {
+                    if (isCovering) { fillColor = COVERING_COLOR; strokeColor = '#374151'; }
+                 }
+
+                 ctx.fillStyle = isDragged ? fillColor.replace('0.25', '0.4').replace('0.2', '0.3') : (isHovered ? fillColor.replace('0.25', '0.3').replace('0.2', '0.25') : fillColor);
+                 ctx.strokeStyle = isDragged ? '#D02B00' : strokeColor;
+                 ctx.lineWidth = isDragged ? 2 : 1.5;
+                 
+                 ctx.fillRect(pxX, pxY, pxW, pxH);
+                 ctx.strokeRect(pxX, pxY, pxW, pxH);
              }
 
-             // Dragging Dimensions (Same for both)
-             if (isDragged) {
-                 const OFFSET = 35;
-                 const drawDimensionLine = (x1: number, y1: number, x2: number, y2: number, text: string, color = DIMENSION_COLOR) => {
-                    ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 1;
-                    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
-                    // Arrows
-                    const angle = Math.atan2(y2 - y1, x2 - x1); const headLen = 4;
-                    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x1 + headLen * Math.cos(angle-Math.PI/6), y1 + headLen * Math.sin(angle-Math.PI/6)); ctx.lineTo(x1 + headLen * Math.cos(angle+Math.PI/6), y1 + headLen * Math.sin(angle+Math.PI/6)); ctx.fill();
-                    ctx.beginPath(); ctx.moveTo(x2, y2); ctx.lineTo(x2 - headLen * Math.cos(angle-Math.PI/6), y2 - headLen * Math.sin(angle-Math.PI/6)); ctx.lineTo(x2 - headLen * Math.cos(angle+Math.PI/6), y2 - headLen * Math.sin(angle+Math.PI/6)); ctx.fill();
-                    // Text
-                    ctx.font = '600 12px Poppins, sans-serif';
-                    const tm = ctx.measureText(text); const cx = (x1+x2)/2; const cy = (y1+y2)/2;
-                    ctx.fillStyle = 'rgba(255, 255, 255, 0.9)'; ctx.fillRect(cx - tm.width/2 - 4, cy - 8, tm.width + 8, 16);
-                    ctx.fillStyle = color; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(text, cx, cy);
-                 };
-                 const drawProjection = (x1: number, y1: number, x2: number, y2: number) => {
-                    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
-                    ctx.strokeStyle = 'rgba(100, 100, 100, 0.3)'; ctx.setLineDash([3, 3]); ctx.lineWidth = 1; ctx.stroke(); ctx.setLineDash([]);
-                };
+             // Labels
+             const fontSize = Math.max(10, Math.min(16, 11 * (finalScale / 1)));
+             ctx.fillStyle = (mode === 'SPORTS' && isPost) ? '#000' : strokeColor;
+             if (mode === 'SPORTS' && isCovering) ctx.fillStyle = '#000';
 
+             ctx.font = `bold ${fontSize}px Poppins, sans-serif`;
+             ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+             ctx.fillText(obj.label, pxX + pxW/2, pxY + pxH/2);
+             
+             if (isPost || obj.height || obj.elevation) {
+                  ctx.font = `${fontSize * 0.8}px Poppins, sans-serif`;
+                  const hText = isPost ? `H:${obj.height}m` : (obj.elevation ? `E:${obj.elevation}m` : `H:${obj.height}m`);
+                  // For posts draw below
+                  if (isPost) {
+                      ctx.fillStyle = FIELD_LINE_COLOR;
+                      ctx.fillText(hText, pxX + pxW/2, pxY + pxH + fontSize);
+                  } else {
+                      ctx.fillText(hText, pxX + pxW/2, pxY + pxH/2 + fontSize);
+                  }
+             }
+             
+             // --- INDUSTRIAL DIMENSIONS (When dragged ONLY) ---
+             if (mode === 'INDUSTRIAL' && isDragged) {
+                const PROJECTION_COLOR = 'rgba(100, 100, 100, 0.5)';
+                const OFFSET = 35;
                 const WALL_DIM_COLOR = '#3b82f6';
+                const NEIGHBOR_DIM_COLOR = '#F03200'; // Silicon Orange
                 
-                // Wall Distances
+                // 1. Dimensions to Walls (Absolute)
+                const drawProjection = (x1: number, y1: number, x2: number, y2: number) => {
+                    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2);
+                    ctx.strokeStyle = PROJECTION_COLOR; ctx.setLineDash([3, 3]); ctx.lineWidth = 1; ctx.stroke(); ctx.setLineDash([]);
+                };
+                
                 const wallDimY = pxY + pxH + OFFSET;
                 drawProjection(originX, pxY + pxH, originX, wallDimY); drawProjection(pxX, pxY + pxH, pxX, wallDimY);         
-                drawDimensionLine(originX, wallDimY, pxX, wallDimY, `${rack.x.toFixed(2)}m`, WALL_DIM_COLOR);
+                drawDimensionLine(originX, wallDimY, pxX, wallDimY, `${obj.x.toFixed(2)}m`, WALL_DIM_COLOR);
                 
                 const wallDimX = pxX + pxW + OFFSET;
                 drawProjection(pxX + pxW, originY, wallDimX, originY); drawProjection(pxX + pxW, pxY, wallDimX, pxY); 
-                drawDimensionLine(wallDimX, originY, wallDimX, pxY, `${rack.y.toFixed(2)}m`, WALL_DIM_COLOR);
+                drawDimensionLine(wallDimX, originY, wallDimX, pxY, `${obj.y.toFixed(2)}m`, WALL_DIM_COLOR);
 
-                // EDGE-TO-EDGE NEIGHBOR DIMENSIONS
-                let closestGap = Infinity;
-                let closestNeighbor = null;
-                let gapData = { p1: {x:0, y:0}, p2: {x:0, y:0} };
-
-                data.storage.racks.forEach(other => {
-                    if (other.id === rack.id) return;
+                // 2. Dimensions to Neighbors (Relative / Edge-to-Edge)
+                const otherObjects = objects.filter(o => o.id !== obj.id);
+                let closestLeft = null, closestRight = null, closestTop = null, closestBottom = null;
+                let distLeft = Infinity, distRight = Infinity, distTop = Infinity, distBottom = Infinity;
+                
+                otherObjects.forEach(other => {
+                    // Check Vertical Overlap (Y-range intersection) to determine if they are "side by side"
+                    // Add small epsilon to allow for "touching" alignment
+                    const EPSILON = 0.05;
+                    const vertOverlap = Math.max(0, Math.min(obj.y + obj.depth, other.y + other.depth) - Math.max(obj.y, other.y) + EPSILON);
                     
-                    const r1 = { x: rack.x, y: rack.y, w: rack.width, d: rack.depth };
-                    const r2 = { x: other.x, y: other.y, w: other.width, d: other.depth };
-
-                    // Check Overlaps
-                    const xOverlapStart = Math.max(r1.x, r2.x);
-                    const xOverlapEnd = Math.min(r1.x + r1.w, r2.x + r2.w);
-                    const hasXOverlap = xOverlapStart < xOverlapEnd;
-
-                    const yOverlapStart = Math.max(r1.y, r2.y);
-                    const yOverlapEnd = Math.min(r1.y + r1.d, r2.y + r2.d);
-                    const hasYOverlap = yOverlapStart < yOverlapEnd;
-
-                    let currentGap = Infinity;
-                    let currentP1 = {x:0, y:0}, currentP2 = {x:0, y:0};
-                    let isAligned = false;
-
-                    if (hasYOverlap) {
-                        // Horizontal Gap (Left/Right)
-                        isAligned = true;
-                        if (r1.x < r2.x) { // R1 Left, R2 Right
-                            currentGap = r2.x - (r1.x + r1.w);
-                            const midY = (yOverlapStart + yOverlapEnd) / 2;
-                            currentP1 = { x: r1.x + r1.w, y: midY };
-                            currentP2 = { x: r2.x, y: midY };
-                        } else { // R1 Right, R2 Left
-                            currentGap = r1.x - (r2.x + r2.w);
-                            const midY = (yOverlapStart + yOverlapEnd) / 2;
-                            currentP1 = { x: r2.x + r2.w, y: midY };
-                            currentP2 = { x: r1.x, y: midY };
-                        }
-                    } else if (hasXOverlap) {
-                        // Vertical Gap (Top/Bottom)
-                        isAligned = true;
-                        if (r1.y < r2.y) { // R1 Top, R2 Bottom
-                            currentGap = r2.y - (r1.y + r1.d);
-                            const midX = (xOverlapStart + xOverlapEnd) / 2;
-                            currentP1 = { x: midX, y: r1.y + r1.d };
-                            currentP2 = { x: midX, y: r2.y };
-                        } else { // R1 Bottom, R2 Top
-                            currentGap = r1.y - (r2.y + r2.d);
-                            const midX = (xOverlapStart + xOverlapEnd) / 2;
-                            currentP1 = { x: midX, y: r2.y + r2.d };
-                            currentP2 = { x: midX, y: r1.y };
-                        }
+                    if (vertOverlap > 0) {
+                         // Neighbor is to the Right
+                         if (other.x >= obj.x + obj.width) {
+                             const gap = other.x - (obj.x + obj.width);
+                             if (gap < distRight) { distRight = gap; closestRight = other; }
+                         }
+                         // Neighbor is to the Left
+                         if (other.x + other.width <= obj.x) {
+                             const gap = obj.x - (other.x + other.width);
+                             if (gap < distLeft) { distLeft = gap; closestLeft = other; }
+                         }
                     }
 
-                    if (isAligned && currentGap >= 0 && currentGap < closestGap) {
-                        closestGap = currentGap;
-                        closestNeighbor = other;
-                        gapData = { p1: currentP1, p2: currentP2 };
+                    // Check Horizontal Overlap (X-range intersection) to determine if they are "above/below"
+                    const horzOverlap = Math.max(0, Math.min(obj.x + obj.width, other.x + other.width) - Math.max(obj.x, other.x) + EPSILON);
+
+                    if (horzOverlap > 0) {
+                        // Neighbor is Below
+                        if (other.y >= obj.y + obj.depth) {
+                            const gap = other.y - (obj.y + obj.depth);
+                            if (gap < distBottom) { distBottom = gap; closestBottom = other; }
+                        }
+                        // Neighbor is Above
+                        if (other.y + other.depth <= obj.y) {
+                            const gap = obj.y - (other.y + other.depth);
+                            if (gap < distTop) { distTop = gap; closestTop = other; }
+                        }
                     }
                 });
 
-                if (closestNeighbor && isFinite(closestGap)) {
-                    const cx1 = getX(gapData.p1.x);
-                    const cy1 = getY(gapData.p1.y);
-                    const cx2 = getX(gapData.p2.x);
-                    const cy2 = getY(gapData.p2.y);
-                    drawDimensionLine(cx1, cy1, cx2, cy2, `${closestGap.toFixed(2)}m`, DIMENSION_COLOR);
+                // Draw Neighbor Dimensions
+                const cy = pxY + pxH / 2;
+                const cx = pxX + pxW / 2;
+
+                if (closestRight) {
+                    const targetX = getX(closestRight.x); // Left edge of right neighbor
+                    drawDimensionLine(pxX + pxW, cy, targetX, cy, `${distRight.toFixed(2)}m`, NEIGHBOR_DIM_COLOR);
                 }
+
+                if (closestLeft) {
+                    const targetX = getX(closestLeft.x + closestLeft.width); // Right edge of left neighbor
+                    drawDimensionLine(pxX, cy, targetX, cy, `${distLeft.toFixed(2)}m`, NEIGHBOR_DIM_COLOR);
+                }
+                
+                if (closestBottom) {
+                    const targetY = getY(closestBottom.y); // Top edge of bottom neighbor
+                    drawDimensionLine(cx, pxY + pxH, cx, targetY, `${distBottom.toFixed(2)}m`, NEIGHBOR_DIM_COLOR);
+                }
+
+                if (closestTop) {
+                    const targetY = getY(closestTop.y + closestTop.depth); // Bottom edge of top neighbor
+                    drawDimensionLine(cx, pxY, cx, targetY, `${distTop.toFixed(2)}m`, NEIGHBOR_DIM_COLOR);
+                }
+
+             }
+             // Sports Covering Dimensions (Standard)
+             if (mode === 'SPORTS' && isCovering) {
+                 const WALL_DIM_COLOR = '#3b82f6';
+                 const cx = pxX + pxW/2;
+                 const cy = pxY + pxH/2;
+                 const centerX = obj.x + obj.width/2;
+                 const centerY = obj.y + obj.depth/2;
+                 if (centerX < data.width / 2) { drawDimensionLine(originX, cy, cx, cy, `${centerX.toFixed(2)}m`, WALL_DIM_COLOR); } 
+                 else { drawDimensionLine(cx, cy, originX + drawWidth, cy, `${(data.width - centerX).toFixed(2)}m`, WALL_DIM_COLOR); }
+                 if (centerY < data.length / 2) { drawDimensionLine(cx, originY, cx, cy, `${centerY.toFixed(2)}m`, WALL_DIM_COLOR); } 
+                 else { drawDimensionLine(cx, cy, cx, originY + drawLength, `${(data.length - centerY).toFixed(2)}m`, WALL_DIM_COLOR); }
              }
          });
+     }
+
+     // --- SPORTS POST DIMENSION LOGIC (Refined & Offset) ---
+     if (mode === 'SPORTS') {
+        const allPosts = isSports(data) ? data.objects.filter(o => o.type === 'POST').sort((a,b) => a.x - b.x) : [];
+        
+        let prevAnchorX = 0; // Starts at Left Goal Line
+        let offsetLevel = 0; // Level 0 = closest
+        const WALL_DIM_COLOR = '#3b82f6';
+
+        allPosts.forEach((obj, index) => {
+            const centerX = obj.x + obj.width/2;
+            const centerY = obj.y + obj.depth/2;
+            
+            const pxX = getX(obj.x);
+            const pxY = getY(obj.y);
+            const pxW = toPx(obj.width);
+            const pxH = toPx(obj.depth);
+            const cx = pxX + pxW/2;
+            const cy = pxY + pxH/2;
+
+            // 1. Calculate visual collision with previous anchor
+            const distFromPrev = centerX - prevAnchorX;
+            // Rule: If deltaX < 2.0m, bump offset
+            if (distFromPrev < 2.0) {
+                offsetLevel += 1;
+            } else {
+                offsetLevel = 0; // Reset if enough space
+            }
+
+            // Calculate vertical pixel shift based on offsetLevel
+            // Step = 0.5m. Level 0 = 0m. Level 1 = 0.5m...
+            const verticalShiftMeters = offsetLevel * 0.5;
+            const verticalShiftPx = toPx(verticalShiftMeters);
+            
+            // Determine direction of shift based on Y position (Up if top half, Down if bottom half)
+            const shiftDir = centerY < data.length / 2 ? -1 : 1; 
+            const finalShift = verticalShiftPx * shiftDir;
+
+            const lineY = cy + finalShift;
+
+            // DRAW CHAIN DIMENSION (Prev -> Curr)
+            // Get previous X pixel coord
+            const prevPxX = getX(prevAnchorX);
+            
+            // Draw
+            const dimText = distFromPrev.toFixed(2) + 'm';
+            const dimColor = index === 0 ? WALL_DIM_COLOR : '#F03200'; // First one is to wall (blue), others inter-pole (orange)
+            
+            drawDimensionLine(prevPxX, lineY, cx, lineY, dimText, dimColor);
+            
+            // Draw small connector if offset is large? Optional visual aid.
+            if (offsetLevel > 0) {
+               ctx.strokeStyle = 'rgba(0,0,0,0.2)'; ctx.setLineDash([2,2]); 
+               ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx, lineY); ctx.stroke(); ctx.setLineDash([]);
+            }
+
+            // DRAW Y-DIMENSION (Only for first post)
+            if (index === 0) {
+                 if (centerY < data.length / 2) {
+                     drawDimensionLine(cx, originY, cx, cy, `${centerY.toFixed(2)}m`, WALL_DIM_COLOR);
+                 } else {
+                     drawDimensionLine(cx, cy, cx, originY + drawLength, `${(data.length - centerY).toFixed(2)}m`, WALL_DIM_COLOR);
+                 }
+            }
+
+            // MIDFIELD RULE
+            const midFieldX = data.width / 2;
+            if (centerX > midFieldX) {
+                // Check distance to right wall
+                const distToRight = data.width - centerX;
+                drawDimensionLine(cx, lineY, originX + drawWidth, lineY, `${distToRight.toFixed(2)}m`, WALL_DIM_COLOR);
+            }
+
+            prevAnchorX = centerX;
+        });
      }
      
      return { originX, originY, scale: finalScale, drawWidth, drawLength };
   };
 
-  // --- DOWNLOAD ---
+  // --- DOWNLOAD (Refined Report Layout) ---
   useImperativeHandle(ref, () => ({
     downloadImage: () => {
       const sourceCanvas = canvasRef.current;
       if (!sourceCanvas) return;
-
+      
+      // Configuration
       const docWidth = 1200;
       const padding = 60;
-      const headerHeight = 120;
-      const summaryHeight = 280;
-      const obsHeight = data.observations ? 150 : 0;
+      const sectionGap = 40;
       
-      const drawingAspectRatio = sourceCanvas.height / sourceCanvas.width;
-      const drawingWidth = docWidth - (padding * 2);
-      const drawingHeight = drawingWidth * drawingAspectRatio;
+      // Colors
+      const bgMain = '#ffffff';
+      const textDark = '#121212';
+      const textGray = '#666666';
+      const brandOrange = '#F03200';
+      const brandTeal = '#42C0B5';
+      const brandPurple = '#7F3F98';
       
-      // Extra space for 3D view
-      const perspectiveHeight = 500; 
-
-      const docHeight = headerHeight + summaryHeight + drawingHeight + obsHeight + perspectiveHeight + padding + 100;
-
-      const tempCanvas = document.createElement('canvas');
-      tempCanvas.width = docWidth;
-      tempCanvas.height = docHeight;
-      const ctx = tempCanvas.getContext('2d');
-      if (!ctx) return;
-
-      // 1. Bg White
-      ctx.fillStyle = '#ffffff'; 
-      ctx.fillRect(0, 0, docWidth, docHeight);
-
-      // 2. Header
-      const gradient = ctx.createLinearGradient(0, 0, docWidth, 0);
-      gradient.addColorStop(0, '#F6C847'); gradient.addColorStop(0.5, '#F03200'); gradient.addColorStop(1, '#7F3F98');
-      ctx.fillStyle = gradient; ctx.fillRect(0, 0, docWidth, 10);
-
-      ctx.fillStyle = '#1f2937'; ctx.font = 'bold 48px Poppins, sans-serif'; ctx.textAlign = 'left';
-      ctx.fillText("LogiSketch Pro", padding, 80);
-      ctx.fillStyle = '#6b7280'; ctx.font = '500 20px Poppins, sans-serif';
-      ctx.fillText("DOCUMENTO TÉCNICO DE PROJETO", padding, 110);
-      ctx.beginPath(); ctx.arc(docWidth - padding - 20, 70, 20, 0, Math.PI * 2); ctx.fillStyle = '#F03200'; ctx.fill();
-
-      // 3. Summary Grid (Reuse logic)
-      const startY = headerHeight + 20;
-      const boxW = (docWidth - (padding * 2) - 40) / 3;
-      const boxH = 100;
-      const drawBox = (title: string, value: string, sub: string, col: number, row: number, color: string) => {
-         const x = padding + (col * (boxW + 20)); const y = startY + (row * (boxH + 20));
-         ctx.fillStyle = '#f9fafb'; ctx.strokeStyle = '#e5e7eb'; ctx.lineWidth = 1; ctx.fillRect(x, y, boxW, boxH); ctx.strokeRect(x, y, boxW, boxH);
-         ctx.fillStyle = color; ctx.fillRect(x, y, 4, boxH);
-         ctx.fillStyle = '#6b7280'; ctx.font = '600 14px Poppins, sans-serif'; ctx.fillText(title.toUpperCase(), x + 20, y + 30);
-         ctx.fillStyle = '#111827'; ctx.font = 'bold 24px Poppins, sans-serif'; ctx.fillText(value, x + 20, y + 60);
-         if (sub) { ctx.fillStyle = color; ctx.font = '500 14px Poppins, sans-serif'; ctx.fillText(sub, x + 20, y + 82); }
+      // Helper: Draw Text
+      const drawText = (ctx: CanvasRenderingContext2D, text: string, x: number, y: number, size: number, color: string, weight: string = 'normal', align: CanvasTextAlign = 'left') => {
+          ctx.font = `${weight} ${size}px Poppins, sans-serif`;
+          ctx.fillStyle = color;
+          ctx.textAlign = align;
+          ctx.fillText(text, x, y);
       };
-      
-      const fixturesCount = data.lighting.isActive 
-        ? (data.lighting.fixturesPerProfile > 0 ? "Definido/Perfil" : "N/A") 
-        : "N/A";
-        
-      drawBox("Dimensões", `${data.width}m x ${data.length}m`, `Área: ${data.width * data.length}m²`, 0, 0, '#6b7280');
-      drawBox("Pé Direito", `${data.ceilingHeight}m`, "Altura Útil", 1, 0, '#6b7280');
-      drawBox("Lux Alvo", `${data.luxRequired} lux`, "Requisito", 2, 0, '#F6C847');
-      drawBox("Iluminação", fixturesCount, data.lighting.isActive ? `Perfilado: ${data.lighting.orientation === 'LONGITUDINAL' ? '// Comp' : '// Larg'}` : "Sem Perfilado", 0, 1, '#42C0B5');
-      const totalRacks = data.storage.racks.filter(r => r.type === 'RACK').length;
-      const totalMezzanines = data.storage.racks.filter(r => r.type === 'MEZZANINE').length;
-      drawBox("Armazenagem", `${totalRacks} Racks`, `${totalMezzanines} Mezaninos`, 1, 1, '#F03200');
 
-      // 4. Draw 2D Layout
-      const imgY = startY + (boxH * 2) + 60;
-      ctx.fillStyle = '#111827'; ctx.font = 'bold 20px Poppins, sans-serif'; ctx.fillText("LAYOUT GRÁFICO (2D)", padding, imgY - 20);
-      ctx.strokeStyle = '#e5e7eb'; ctx.lineWidth = 2; ctx.strokeRect(padding, imgY, drawingWidth, drawingHeight);
+      // 1. Calculate Layout Heights
+      const headerHeight = 120;
       
-      ctx.save();
-      ctx.translate(padding, imgY);
-      const c2d = document.createElement('canvas'); c2d.width = 1200; c2d.height = 1200 * drawingAspectRatio;
-      const ctx2d = c2d.getContext('2d');
-      if (ctx2d) drawScene2D(ctx2d, c2d.width, c2d.height);
-      ctx.drawImage(c2d, 0, 0, drawingWidth, drawingHeight);
-      ctx.restore();
-
-      // 5. Draw 3D Perspective
-      const pY = imgY + drawingHeight + 60;
-      ctx.fillStyle = '#111827'; ctx.font = 'bold 20px Poppins, sans-serif'; ctx.fillText("PERSPECTIVA ISOMÉTRICA (3D)", padding, pY - 20);
-      ctx.strokeStyle = '#e5e7eb'; ctx.strokeRect(padding, pY, drawingWidth, perspectiveHeight);
+      // Data Grid Calculation (Row height approx 70px + padding)
+      const dataSectionHeight = 220; 
       
-      const c3d = document.createElement('canvas'); c3d.width = 1200; c3d.height = 600;
-      const ctx3d = c3d.getContext('2d');
-      if (ctx3d) drawScene3D(ctx3d, c3d.width, c3d.height, true); // Transparent BG
-      // Draw a dark background for the 3D area on the doc
-      ctx.fillStyle = '#111827'; ctx.fillRect(padding, pY, drawingWidth, perspectiveHeight);
-      ctx.drawImage(c3d, 0,0, c3d.width, c3d.height, padding, pY, drawingWidth, perspectiveHeight);
+      const obsHeight = data.observations ? 100 : 0;
+      
+      // Images
+      const drawingAspectRatio = sourceCanvas.height / sourceCanvas.width;
+      const contentWidth = docWidth - (padding * 2);
+      const img2DHeight = contentWidth * drawingAspectRatio;
+      const img3DHeight = 500; // Fixed height for 3D usually looks good
+      
+      const footerHeight = 80;
 
-      // 6. Observations
-      let footerY = pY + perspectiveHeight + 30;
+      const totalHeight = headerHeight + dataSectionHeight + obsHeight + img2DHeight + img3DHeight + (sectionGap * 5) + footerHeight;
+
+      const tempCanvas = document.createElement('canvas'); 
+      tempCanvas.width = docWidth; 
+      tempCanvas.height = totalHeight;
+      const ctx = tempCanvas.getContext('2d'); if (!ctx) return;
+
+      // Background
+      ctx.fillStyle = bgMain;
+      ctx.fillRect(0, 0, docWidth, totalHeight);
+
+      let currentY = padding + 20;
+
+      // --- HEADER ---
+      // Logo / Brand
+      drawText(ctx, "Schema", padding, currentY + 10, 40, textDark, 'bold');
+      drawText(ctx, "INDUSTRIAL BUILDER", padding, currentY + 40, 14, brandOrange, '600');
+      
+      // Date
+      const dateStr = new Date().toLocaleDateString();
+      drawText(ctx, dateStr, docWidth - padding, currentY + 10, 14, textGray, 'normal', 'right');
+      
+      currentY += headerHeight;
+
+      // --- PROJECT DATA GRID ---
+      // Draw Section Title
+      drawText(ctx, "DADOS DO PROJETO", padding, currentY, 18, textDark, 'bold');
+      currentY += 30;
+
+      // Draw Grid Background
+      const gridY = currentY;
+      const boxHeight = 160;
+      ctx.fillStyle = '#f8f9fa';
+      ctx.fillRect(padding, gridY, contentWidth, boxHeight);
+      ctx.strokeStyle = '#e9ecef';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(padding, gridY, contentWidth, boxHeight);
+
+      // Columns
+      const colW = contentWidth / 3;
+      
+      // Function to draw data item
+      const drawDataItem = (col: number, row: number, label: string, val: string, sub?: string) => {
+          const x = padding + (col * colW) + 20;
+          const y = gridY + (row * 70) + 30;
+          drawText(ctx, label.toUpperCase(), x, y, 11, textGray, '600');
+          drawText(ctx, val, x, y + 25, 18, textDark, 'bold');
+          if (sub) drawText(ctx, sub, x, y + 42, 12, brandTeal, '500');
+      };
+
+      // Row 1
+      let projectName = "Sem Título";
+      if (isIndustrial(data) && data.projectName) projectName = data.projectName;
+      
+      drawDataItem(0, 0, "Nome do Projeto", projectName);
+      drawDataItem(1, 0, "Dimensões", `${data.width}m x ${data.length}m`, `Área: ${(data.width * data.length).toFixed(0)}m²`);
+      drawDataItem(2, 0, "Pé Direito", isIndustrial(data) ? `${data.ceilingHeight}m` : "N/A");
+
+      // Row 2
+      drawDataItem(0, 1, "Nível de Lux", isIndustrial(data) ? `${data.luxRequired} lux` : "N/A");
+      
+      // Lighting Logic
+      let lightingMain = "Não Definido";
+      let lightingSub = "";
+      if (isIndustrial(data) && data.lighting.isActive) {
+          const { mode, value, offset, fixturesPerProfile } = data.lighting;
+          const modeText = mode === LightingMode.Distance ? `Dist. ${value}m` : `${value} Linhas`;
+          lightingMain = `${modeText} (Offset ${offset}m)`;
+          lightingSub = fixturesPerProfile > 0 ? `${fixturesPerProfile} Luminárias/Perfil` : "";
+      }
+      drawDataItem(1, 1, "Infra. Iluminação", lightingMain, lightingSub);
+
+      // Objects Logic
+      const objs = getObjects();
+      const racksCount = objs.filter(o => o.type === 'RACK').length;
+      const mezzCount = objs.filter(o => o.type === 'MEZZANINE').length;
+      const totalObjs = racksCount + mezzCount;
+      const objText = totalObjs > 0 ? `${totalObjs} Objetos` : "Nenhum";
+      const objSub = totalObjs > 0 ? `(${racksCount} Racks, ${mezzCount} Mezaninos)` : "";
+      drawDataItem(2, 1, "Objetos", objText, objSub);
+
+      currentY += boxHeight + sectionGap;
+
+      // --- OBSERVATIONS ---
       if (data.observations) {
-        ctx.fillStyle = '#f3f4f6'; ctx.fillRect(padding, footerY, drawingWidth, 100);
-        ctx.strokeStyle = '#e5e7eb'; ctx.strokeRect(padding, footerY, drawingWidth, 100);
-        ctx.fillStyle = '#1f2937'; ctx.font = 'bold 16px Poppins, sans-serif'; ctx.fillText("OBSERVAÇÕES DO PROJETO:", padding + 20, footerY + 30);
-        ctx.fillStyle = '#4b5563'; ctx.font = '14px Poppins, sans-serif';
-        ctx.fillText(data.observations.substring(0, 150) + (data.observations.length > 150 ? '...' : ''), padding + 20, footerY + 60);
+          drawText(ctx, "OBSERVAÇÕES", padding, currentY, 18, textDark, 'bold');
+          currentY += 20;
+          
+          ctx.fillStyle = '#fff7ed'; // light orange bg
+          ctx.fillRect(padding, currentY, contentWidth, 60);
+          ctx.strokeStyle = '#ffedd5';
+          ctx.strokeRect(padding, currentY, contentWidth, 60);
+          
+          // Wrap text logic simplified for short observation or cut off
+          ctx.font = '14px Poppins, sans-serif';
+          ctx.fillStyle = '#9a3412';
+          ctx.fillText(data.observations, padding + 20, currentY + 35);
+          
+          currentY += 60 + sectionGap;
       }
 
-      ctx.fillStyle = '#9ca3af'; ctx.font = '12px Poppins, sans-serif'; ctx.textAlign = 'center';
-      ctx.fillText(`Gerado por LogiSketch Pro - ${new Date().toLocaleDateString()}`, docWidth/2, docHeight - 20);
+      // --- 2D LAYOUT ---
+      drawText(ctx, "LAYOUT GRÁFICO (2D)", padding, currentY, 18, textDark, 'bold');
+      currentY += 20;
 
+      // Draw 2D Scene to temp canvas
+      const c2d = document.createElement('canvas'); 
+      c2d.width = 1200; 
+      c2d.height = 1200 * drawingAspectRatio;
+      const ctx2d = c2d.getContext('2d');
+      if (ctx2d) drawScene2D(ctx2d, c2d.width, c2d.height);
+
+      ctx.drawImage(c2d, 0, 0, c2d.width, c2d.height, padding, currentY, contentWidth, img2DHeight);
+      ctx.strokeStyle = '#121212'; ctx.lineWidth = 2; ctx.strokeRect(padding, currentY, contentWidth, img2DHeight);
+      
+      currentY += img2DHeight + sectionGap;
+
+      // --- 3D PERSPECTIVE ---
+      drawText(ctx, "PERSPECTIVA ISOMÉTRICA (3D)", padding, currentY, 18, textDark, 'bold');
+      currentY += 20;
+
+      const c3d = document.createElement('canvas'); 
+      c3d.width = 1200; 
+      c3d.height = 600; // Fixed aspect for 3D render usually
+      const ctx3d = c3d.getContext('2d');
+      if (ctx3d) drawScene3D(ctx3d, c3d.width, c3d.height, true); // true for transparent bg, but here we might want dark bg
+      
+      // Draw Dark Background for 3D on PDF
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(padding, currentY, contentWidth, img3DHeight);
+      
+      // Draw 3D Image
+      ctx.drawImage(c3d, 0, 0, c3d.width, c3d.height, padding, currentY, contentWidth, img3DHeight);
+      ctx.strokeStyle = '#121212'; ctx.lineWidth = 2; ctx.strokeRect(padding, currentY, contentWidth, img3DHeight);
+
+      currentY += img3DHeight + sectionGap;
+
+      // --- FOOTER ---
+      ctx.fillStyle = '#f1f5f9';
+      ctx.fillRect(0, totalHeight - footerHeight, docWidth, footerHeight);
+      drawText(ctx, "Gerado por Schema | Silicon Group", docWidth/2, totalHeight - (footerHeight/2) + 5, 12, textGray, 'normal', 'center');
+
+      // --- SAVE ---
       const link = document.createElement('a');
-      link.download = `LogiSketch-Relatorio-${new Date().toISOString().slice(0,10)}.png`;
+      const filename = isIndustrial(data) && data.projectName ? data.projectName : `Schema-${mode}`;
+      link.download = `${filename.replace(/\s+/g, '_')}_Report.png`;
       link.href = tempCanvas.toDataURL('image/png');
       link.click();
     }
   }));
 
-  // --- MOUSE HANDLERS (Same structure, using helper) ---
-  const handleWheel = (e: React.WheelEvent) => {
-    if (viewMode === '3D') return;
-    const delta = -e.deltaY; const zoomFactor = 1.1; let newScale = transform.scale;
-    if (delta > 0) newScale *= zoomFactor; else newScale /= zoomFactor;
-    newScale = Math.min(Math.max(0.5, newScale), 10);
-    setTransform(prev => ({ ...prev, scale: newScale }));
-  };
-
-  const startPan = (e: React.MouseEvent) => {
-      if (e.button === 1 || e.button === 2 || (e.button === 0 && e.altKey)) {
-          e.preventDefault(); setIsPanning(true); setLastMousePos({ x: e.clientX, y: e.clientY });
-      }
-  };
-
-  const handlePanMove = (e: React.MouseEvent) => {
-      if (isPanning) {
-          const dx = e.clientX - lastMousePos.x; const dy = e.clientY - lastMousePos.y;
-          setTransform(prev => ({ ...prev, x: prev.x + dx, y: prev.y + dy }));
-          setLastMousePos({ x: e.clientX, y: e.clientY });
-      }
-  };
-
-  const endPan = () => { setIsPanning(false); };
-
+  // --- MOUSE HANDLERS ---
   const getMetrics = () => {
       const canvas = canvasRef.current; if (!canvas) return null;
       const padding = 60; 
@@ -661,64 +884,122 @@ export const WarehouseCanvas = forwardRef<CanvasHandle, WarehouseCanvasProps>(({
       return { scale: finalScale, originX, originY, drawWidth, drawLength };
   };
 
+  const getCanvasCoordinates = (e: React.MouseEvent) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return { x: 0, y: 0 };
+      
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      
+      return {
+          x: (e.clientX - rect.left) * scaleX,
+          y: (e.clientY - rect.top) * scaleY
+      };
+  };
+
   const handleMouseDown = (e: React.MouseEvent) => {
     if (viewMode === '3D') return;
-    if (e.button === 1 || e.button === 2 || e.altKey) { startPan(e); return; }
+    if (e.button === 1 || e.button === 2 || e.altKey) { setIsPanning(true); setLastMousePos({ x: e.clientX, y: e.clientY }); return; }
     if (!isInteractive) return;
     const metrics = getMetrics(); if (!metrics) return;
-    const rect = canvasRef.current!.getBoundingClientRect();
-    const mouseX = e.clientX - rect.left; const mouseY = e.clientY - rect.top;
-    const clickedRack = [...data.storage.racks].reverse().find(rack => {
-        const pxX = metrics.originX + (rack.x * metrics.scale);
-        const pxY = metrics.originY + (rack.y * metrics.scale);
-        const pxW = rack.width * metrics.scale;
-        const pxH = rack.depth * metrics.scale;
-        return mouseX >= pxX && mouseX <= pxX + pxW && mouseY >= pxY && mouseY <= pxY + pxH;
+    
+    // Correct mouse coordinates accounting for CSS scaling
+    const { x: mouseX, y: mouseY } = getCanvasCoordinates(e);
+    
+    // HIT PADDING: Set to 0 for exact match in Step 3 (Industrial). 
+    // Small padding for Sports can be kept if needed later, but removing for accuracy request.
+    const HIT_PADDING = 0; 
+
+    const objects = getObjects();
+    const clickedObj = [...objects].reverse().find(obj => {
+        const pxX = metrics.originX + (obj.x * metrics.scale);
+        const pxY = metrics.originY + (obj.y * metrics.scale);
+        const pxW = obj.width * metrics.scale;
+        const pxH = obj.depth * metrics.scale;
+        
+        const hitX = pxX - HIT_PADDING;
+        const hitY = pxY - HIT_PADDING;
+        const hitW = pxW + (HIT_PADDING * 2);
+        const hitH = pxH + (HIT_PADDING * 2);
+
+        return mouseX >= hitX && mouseX <= hitX + hitW && mouseY >= hitY && mouseY <= hitY + hitH;
     });
-    if (clickedRack) {
-        const rackPxX = metrics.originX + (clickedRack.x * metrics.scale);
-        const rackPxY = metrics.originY + (clickedRack.y * metrics.scale);
-        setDragTarget({ id: clickedRack.id, offsetX: mouseX - rackPxX, offsetY: mouseY - rackPxY });
+    if (clickedObj) {
+        const rackPxX = metrics.originX + (clickedObj.x * metrics.scale);
+        const rackPxY = metrics.originY + (clickedObj.y * metrics.scale);
+        setDragTarget({ id: clickedObj.id, offsetX: mouseX - rackPxX, offsetY: mouseY - rackPxY });
     }
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
     if (viewMode === '3D') return;
-    if (isPanning) { handlePanMove(e); return; }
+    if (isPanning) { 
+        const dx = e.clientX - lastMousePos.x; const dy = e.clientY - lastMousePos.y;
+        setTransform(prev => ({ ...prev, x: prev.x + dx, y: prev.y + dy }));
+        setLastMousePos({ x: e.clientX, y: e.clientY });
+        return; 
+    }
     if (!isInteractive) return;
     const metrics = getMetrics(); if (!metrics) return;
-    const rect = canvasRef.current!.getBoundingClientRect();
-    const mouseX = e.clientX - rect.left; const mouseY = e.clientY - rect.top;
+    
+    // Correct mouse coordinates
+    const { x: mouseX, y: mouseY } = getCanvasCoordinates(e);
+    
+    const HIT_PADDING = 0; // Strict hit detection
 
     if (dragTarget && onRackMove) {
         const rawX = mouseX - dragTarget.offsetX;
         const rawY = mouseY - dragTarget.offsetY;
         let xMeters = (rawX - metrics.originX) / metrics.scale;
         let yMeters = (rawY - metrics.originY) / metrics.scale;
-        // Snap logic
-        const SNAP_INCREMENT = 0.5;
+        // Snap logic (Updated for Sports Mode to 0.5m)
+        const SNAP_INCREMENT = 0.5; // Always 0.5m
         xMeters = Math.round(xMeters / SNAP_INCREMENT) * SNAP_INCREMENT;
         yMeters = Math.round(yMeters / SNAP_INCREMENT) * SNAP_INCREMENT;
-        const rack = data.storage.racks.find(r => r.id === dragTarget.id);
-        if (rack) {
-            xMeters = Math.max(0, Math.min(xMeters, data.width - rack.width));
-            yMeters = Math.max(0, Math.min(yMeters, data.length - rack.depth));
+        
+        const objects = getObjects();
+        const obj = objects.find(r => r.id === dragTarget.id);
+        if (obj) {
+            if (mode === 'SPORTS') {
+                // ALLOW MOVEMENT OUTSIDE THE FIELD (Buffer of 50m)
+                xMeters = Math.max(-50, Math.min(xMeters, data.width + 50));
+                yMeters = Math.max(-50, Math.min(yMeters, data.length + 50));
+            } else {
+                // Industrial limits (Strictly inside)
+                xMeters = Math.max(0, Math.min(xMeters, data.width - obj.width));
+                yMeters = Math.max(0, Math.min(yMeters, data.length - obj.depth));
+            }
             onRackMove(dragTarget.id, xMeters, yMeters);
         }
         return;
     }
+    // Hover logic
+    const objects = getObjects();
+    const hovered = [...objects].reverse().find(obj => {
+        const pxX = metrics.originX + (obj.x * metrics.scale);
+        const pxY = metrics.originY + (obj.y * metrics.scale);
+        const pxW = obj.width * metrics.scale;
+        const pxH = obj.depth * metrics.scale;
+        
+        const hitX = pxX - HIT_PADDING;
+        const hitY = pxY - HIT_PADDING;
+        const hitW = pxW + (HIT_PADDING * 2);
+        const hitH = pxH + (HIT_PADDING * 2);
 
-    const hovered = data.storage.racks.find(rack => {
-        const pxX = metrics.originX + (rack.x * metrics.scale);
-        const pxY = metrics.originY + (rack.y * metrics.scale);
-        const pxW = rack.width * metrics.scale;
-        const pxH = rack.depth * metrics.scale;
-        return mouseX >= pxX && mouseX <= pxX + pxW && mouseY >= pxY && mouseY <= pxY + pxH;
+        return mouseX >= hitX && mouseX <= hitX + hitW && mouseY >= hitY && mouseY <= hitY + hitH;
     });
     setHoveredBlockId(hovered ? hovered.id : null);
   };
 
-  const handleMouseUp = () => { setDragTarget(null); endPan(); };
+  const handleMouseUp = () => { setDragTarget(null); setIsPanning(false); };
+  const handleWheel = (e: React.WheelEvent) => {
+    if (viewMode === '3D') return;
+    const delta = -e.deltaY; const zoomFactor = 1.1; let newScale = transform.scale;
+    if (delta > 0) newScale *= zoomFactor; else newScale /= zoomFactor;
+    newScale = Math.min(Math.max(0.5, newScale), 10);
+    setTransform(prev => ({ ...prev, scale: newScale }));
+  };
 
   // --- RENDER LOOP ---
   useEffect(() => {
@@ -730,7 +1011,7 @@ export const WarehouseCanvas = forwardRef<CanvasHandle, WarehouseCanvasProps>(({
     } else {
       drawScene2D(ctx, canvas.width, canvas.height, transform);
     }
-  }, [data, width, height, dragTarget, hoveredBlockId, viewMode, transform]);
+  }, [data, width, height, dragTarget, hoveredBlockId, viewMode, transform, mode]);
 
   return (
     <div 
@@ -751,30 +1032,9 @@ export const WarehouseCanvas = forwardRef<CanvasHandle, WarehouseCanvasProps>(({
       
       {viewMode === '2D' && (
           <div className="absolute bottom-4 left-4 flex gap-2">
-              <button 
-                className="bg-gray-800/80 text-white p-2 rounded-full hover:bg-silicon-orange transition-colors"
-                onClick={() => setTransform(prev => ({...prev, scale: Math.min(prev.scale * 1.2, 10)}))}
-                title="Zoom In"
-              >
-                  <ZoomIn size={16} />
-              </button>
-              <button 
-                className="bg-gray-800/80 text-white p-2 rounded-full hover:bg-silicon-orange transition-colors"
-                onClick={() => setTransform(prev => ({...prev, scale: Math.max(prev.scale / 1.2, 0.5)}))}
-                title="Zoom Out"
-              >
-                  <ZoomOut size={16} />
-              </button>
-              <button 
-                className="bg-gray-800/80 text-white p-2 rounded-full hover:bg-silicon-orange transition-colors"
-                onClick={() => setTransform({ scale: 1, x: 0, y: 0 })}
-                title="Reset View"
-              >
-                  <Maximize size={16} />
-              </button>
-              <div className="bg-gray-800/50 px-3 py-2 rounded-full text-white text-[10px] flex items-center gap-1">
-                 <Move size={10} /> <span>Pan: Alt + Drag</span>
-              </div>
+              <button className="bg-gray-800/80 text-white p-2 rounded-full" onClick={() => setTransform(prev => ({...prev, scale: Math.min(prev.scale * 1.2, 10)}))}><ZoomIn size={16} /></button>
+              <button className="bg-gray-800/80 text-white p-2 rounded-full" onClick={() => setTransform(prev => ({...prev, scale: Math.max(prev.scale / 1.2, 0.5)}))}><ZoomOut size={16} /></button>
+              <button className="bg-gray-800/80 text-white p-2 rounded-full" onClick={() => setTransform({ scale: 1, x: 0, y: 0 })}><Maximize size={16} /></button>
           </div>
       )}
     </div>
