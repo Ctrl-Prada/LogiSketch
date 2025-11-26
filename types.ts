@@ -39,6 +39,7 @@ export interface StorageConfig {
 }
 
 export interface ProjectData {
+  projectName: string; // New field
   // Step 1 (Merged)
   width: number;
   length: number;
@@ -54,6 +55,7 @@ export interface ProjectData {
 }
 
 export const DEFAULT_PROJECT: ProjectData = {
+  projectName: "Novo Projeto",
   width: 0,
   length: 0,
   ceilingHeight: 0,
@@ -72,4 +74,34 @@ export const DEFAULT_PROJECT: ProjectData = {
   },
   luxRequired: 300,
   observations: "",
+};
+
+// --- SPORTS MODULE TYPES ---
+
+export type SportsObjectType = 'POST' | 'COVERING';
+
+export interface SportsObject {
+  id: string;
+  type: SportsObjectType;
+  x: number;
+  y: number;
+  width: number; // For posts: Diameter/Size. For Covering: Width
+  depth: number;
+  height: number; // Post height or Covering thickness
+  elevation: number; // For Covering: Height from ground
+  label: string;
+}
+
+export interface SportsProjectData {
+  width: number;
+  length: number;
+  objects: SportsObject[];
+  observations: string;
+}
+
+export const DEFAULT_SPORTS_PROJECT: SportsProjectData = {
+  width: 40,
+  length: 20,
+  objects: [],
+  observations: ""
 };

@@ -1,8 +1,9 @@
 
+
 export const STEP_TITLES = [
   "Definição do Galpão", // Step 1
   "Infraestrutura de Iluminação", // Step 2
-  "Layout de Armazenagem", // Step 3 (Now includes height)
+  "Layout", // Step 3 (Was Layout de Armazenagem)
   "Requisito Luminotécnico", // Step 4 (Was 5)
   "Resumo Técnico" // Step 5 (Was 6)
 ];
@@ -21,3 +22,10 @@ export const FIXTURE_COLOR = "#F03200"; // Silicon Orange for high contrast on w
 export const FIXTURE_GLOW = "rgba(246, 200, 71, 0.8)"; // Stronger Yellow Glow
 export const WALL_COLOR = "#1f2937"; // Gray-800
 export const DIMENSION_COLOR = "#7F3F98"; // Silicon Purple
+
+// SPORTS MODULE COLORS
+export const GRASS_COLOR = "#ecfdf5"; // Technical Mint Green (Emerald-50) - Prettier than white
+export const FIELD_LINE_COLOR = "#1f2937"; // Gray-800 for high contrast
+export const POST_COLOR = "#9ca3af"; // Gray-400
+export const POST_STROKE = "#374151"; // Gray-700
+export const COVERING_COLOR = "rgba(66, 192, 181, 0.2)"; // Silicon Teal transparent
